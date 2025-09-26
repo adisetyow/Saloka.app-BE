@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Log;
+use App\Http\Controllers\Class_ChecklistLog;
 
 class ChecklistMasterController extends Controller
 {
@@ -18,7 +19,6 @@ class ChecklistMasterController extends Controller
      */
     public function index()
     {
-        // Mengambil semua master checklist beserta relasi 'items'-nya
         return ChecklistMaster::with(['items', 'type'])->latest()->get();
     }
 
@@ -27,6 +27,10 @@ class ChecklistMasterController extends Controller
      */
     public function store(Request $request)
     {
+
+        $cleanedIdKaryawan = str_replace(['"', '\\'], '', $request->id_karyawan);
+        $request->merge(['id_karyawan' => $cleanedIdKaryawan]);
+
         $validator = Validator::make($request->all(), [
             'name' => 'required|string|max:255',
             'checklist_type_id' => 'required|integer|exists:checklist_types,id',
@@ -42,18 +46,20 @@ class ChecklistMasterController extends Controller
         // --- LOGIKA SINKRONISASI USER BARU YANG LEBIH EKSPLISIT ---
         try {
             $apiService = new API_Service();
-            $karyawanData = $apiService->getDataKaryawan(['id_karyawan' => $request->id_karyawan]);
+            // $karyawanData = $apiService->getDataKaryawan(['id_karyawan' => $request->id_karyawan]);
+            $response = $apiService->getDataKaryawan(['id_karyawan' => $request->id_karyawan]);
 
             // Validasi response dari API
-            if (!$karyawanData) {
-                return response()->json([
-                    'status' => 'error',
-                    'message' => 'Data karyawan tidak ditemukan dari API.'
-                ], 404);
+            if (!$response || $response['status'] !== 'success' || !isset($response['data'])) { // <-- Validasi lebih ketat
+                Log::warning('API getDataKaryawan tidak mengembalikan data yang valid.', ['response' => $response]);
+                // Kita tidak langsung return error, tapi biarkan fallback di bawah yang menanganinya
+                $karyawanData = null;
+            } else {
+                $karyawanData = $response['data']; // <-- AMBIL DATA DARI DALAM KEY 'data'
             }
 
             // Debug: Log response untuk melihat struktur data
-            Log::info('Karyawan Data Response:', ['data' => $karyawanData]);
+            Log::info('Karyawan Data Response:', ['data' => $response]);
 
             // Langkah 1: Cari user berdasarkan karyawan_id
             $user = User::where('karyawan_id', $request->id_karyawan)->first();
@@ -61,8 +67,9 @@ class ChecklistMasterController extends Controller
             // Langkah 2: Jika user TIDAK DITEMUKAN, maka buat baru
             if (!$user) {
                 // Ekstrak data dengan fallback values
-                $userName = $karyawanData['name'] ?? $karyawanData['nama'] ?? 'User ' . $request->id_karyawan;
-                $userEmail = $karyawanData['email'] ?? $karyawanData['email_karyawan'] ?? $request->id_karyawan . '@internal.com';
+                // Sekarang, $karyawanData adalah array yang benar
+                $userName = $karyawanData['nama'] ?? $karyawanData['name'] ?? 'User ' . $request->id_karyawan;
+                $userEmail = $karyawanData['email_karyawan'] ?? $karyawanData['email'] ?? $request->id_karyawan . '@internal.com';
 
                 $user = User::create([
                     'karyawan_id' => $request->id_karyawan,
@@ -73,7 +80,6 @@ class ChecklistMasterController extends Controller
             }
 
         } catch (\Exception $e) {
-            // Log error untuk debugging
             Log::error('Error getting karyawan data:', [
                 'id_karyawan' => $request->id_karyawan,
                 'error' => $e->getMessage(),
@@ -110,6 +116,16 @@ class ChecklistMasterController extends Controller
                     'is_required' => $itemData['is_required'] ?? true,
                 ]);
             }
+            $requestLog = [
+                'checklist_master_id' => $master->id,
+                'user_id' => $user->karyawan_id,
+                'name' => $user->name,
+                'activity' => 'Create Master Checklist',
+                'detail_act' => 'Membuat master checklist baru dengan nama: ' . $master->name,
+            ];
+
+            $logController = new Class_ChecklistLog();
+            $logController->insert($requestLog);
 
             return response()->json([
                 'status' => 'success',
@@ -129,7 +145,7 @@ class ChecklistMasterController extends Controller
 
     /**
      * Mengupdate data master checklist.
-     * (Logika update bisa ditambahkan di sini nanti)
+
      */
     public function update(Request $request, ChecklistMaster $checklistMaster)
     {
@@ -138,7 +154,6 @@ class ChecklistMasterController extends Controller
             'name' => 'sometimes|required|string|max:255',
             'checklist_type_id' => 'sometimes|required|integer|exists:checklist_types,id',
             'items' => 'sometimes|required|array|min:1',
-            // Validasi untuk setiap item di dalam array
             'items.*.id' => 'nullable|integer|exists:checklist_items,id',
             'items.*.activity_name' => 'required|string|max:255',
         ]);
@@ -147,30 +162,26 @@ class ChecklistMasterController extends Controller
             return response()->json(['status' => 'error', 'message' => $validator->errors()], 422);
         }
 
-        // Memulai transaksi database untuk menjaga integritas data
         return DB::transaction(function () use ($request, $checklistMaster) {
-            // 1. Update data master-nya (name, type) jika ada
             $checklistMaster->update($request->only('name', 'type'));
 
             if ($request->has('items')) {
                 $incomingItems = $request->input('items', []);
                 $incomingItemIds = array_filter(array_column($incomingItems, 'id'));
 
-                // 2. Hapus item yang tidak ada lagi di request
                 ChecklistItem::where('checklist_master_id', $checklistMaster->id)
                     ->whereNotIn('id', $incomingItemIds)
                     ->delete();
 
-                // 3. Update atau Buat item baru
                 foreach ($incomingItems as $index => $itemData) {
                     ChecklistItem::updateOrCreate(
                         [
-                            // Kunci untuk mencari item
+
                             'id' => $itemData['id'] ?? null,
                             'checklist_master_id' => $checklistMaster->id
                         ],
                         [
-                            // Data untuk di-update atau dibuat
+
                             'activity_name' => $itemData['activity_name'],
                             'order' => $index + 1,
                             'is_required' => $itemData['is_required'] ?? true
@@ -179,7 +190,6 @@ class ChecklistMasterController extends Controller
                 }
             }
 
-            // Mengembalikan data yang sudah fresh dari database
             return $checklistMaster->load('items');
         });
     }
