@@ -46,57 +46,54 @@ class ChecklistMasterController extends Controller
         // --- LOGIKA SINKRONISASI USER BARU YANG LEBIH EKSPLISIT ---
         try {
             $apiService = new API_Service();
-            // $karyawanData = $apiService->getDataKaryawan(['id_karyawan' => $request->id_karyawan]);
-            $response = $apiService->getDataKaryawan(['id_karyawan' => $request->id_karyawan]);
+            $requestAPIService = ['id_karyawan' => $request->id_karyawan];
+            $dataKaryawanResponse = $apiService->getDataKaryawan($requestAPIService);
 
-            // Validasi response dari API
-            if (!$response || $response['status'] !== 'success' || !isset($response['data'])) { // <-- Validasi lebih ketat
-                Log::warning('API getDataKaryawan tidak mengembalikan data yang valid.', ['response' => $response]);
-                // Kita tidak langsung return error, tapi biarkan fallback di bawah yang menanganinya
-                $karyawanData = null;
+            // Cek jika respons adalah array dan memiliki elemen pertama (data user)
+            if (isset($dataKaryawanResponse[0])) {
+                $detailKaryawan = $dataKaryawanResponse[0];
+
+                // Ambil nama dan email dari API, dengan fallback jika tidak ada
+                $namaKaryawan = $detailKaryawan['name'] ?? 'User ' . $request->id_karyawan;
+                $emailKaryawan = $detailKaryawan['email'] ?? $request->id_karyawan . '@internal.com';
+
+                // Cari user yang ada, atau buat baru jika tidak ada
+                $user = User::updateOrCreate(
+                    ['karyawan_id' => $request->id_karyawan],
+                    [
+                        'name' => $namaKaryawan,
+                        'email' => $emailKaryawan,
+                    ]
+                );
+
+                // Jika user baru dibuat, berikan password acak
+                if ($user->wasRecentlyCreated) {
+                    $user->password = bcrypt(Str::random(10));
+                    $user->save();
+                }
+
             } else {
-                $karyawanData = $response['data']; // <-- AMBIL DATA DARI DALAM KEY 'data'
-            }
-
-            // Debug: Log response untuk melihat struktur data
-            Log::info('Karyawan Data Response:', ['data' => $response]);
-
-            // Langkah 1: Cari user berdasarkan karyawan_id
-            $user = User::where('karyawan_id', $request->id_karyawan)->first();
-
-            // Langkah 2: Jika user TIDAK DITEMUKAN, maka buat baru
-            if (!$user) {
-                // Ekstrak data dengan fallback values
-                // Sekarang, $karyawanData adalah array yang benar
-                $userName = $karyawanData['nama'] ?? $karyawanData['name'] ?? 'User ' . $request->id_karyawan;
-                $userEmail = $karyawanData['email_karyawan'] ?? $karyawanData['email'] ?? $request->id_karyawan . '@internal.com';
-
-                $user = User::create([
-                    'karyawan_id' => $request->id_karyawan,
-                    'name' => $userName,
-                    'email' => $userEmail,
-                    'password' => bcrypt(Str::random(10))
-                ]);
+                // Jika API tidak mengembalikan data yang valid, lempar exception
+                throw new \Exception('Respons API LokaHR tidak valid atau data karyawan tidak ditemukan.');
             }
 
         } catch (\Exception $e) {
-            Log::error('Error getting karyawan data:', [
+            // Log error yang lebih detail untuk membantu debugging
+            Log::error('Gagal sinkronisasi data karyawan dari API LokaHR.', [
                 'id_karyawan' => $request->id_karyawan,
                 'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
+                'api_response' => $dataKaryawanResponse ?? 'Tidak ada respons'
             ]);
 
-            // Fallback: buat user dengan data minimal
-            $user = User::where('karyawan_id', $request->id_karyawan)->first();
-
-            if (!$user) {
-                $user = User::create([
-                    'karyawan_id' => $request->id_karyawan,
+            // Fallback: Buat user dengan nama generik HANYA JIKA BENAR-BENAR GAGAL
+            $user = User::firstOrCreate(
+                ['karyawan_id' => $request->id_karyawan],
+                [
                     'name' => 'User ' . $request->id_karyawan,
                     'email' => $request->id_karyawan . '@internal.com',
                     'password' => bcrypt(Str::random(10))
-                ]);
-            }
+                ]
+            );
         }
         // --- AKHIR LOGIKA SINKRONISASI ---
 
