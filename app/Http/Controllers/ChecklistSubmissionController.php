@@ -7,9 +7,10 @@ use App\Models\ChecklistSubmission;
 use App\Models\ChecklistSubmissionDetail;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
-use Exception; // Pastikan Exception di-import
+use Exception;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\DB;
 
 class ChecklistSubmissionController extends Controller
 {
@@ -31,14 +32,15 @@ class ChecklistSubmissionController extends Controller
             'user:id,name'
         ]);
 
-        if ($request->has('date') && $request->input('date') != '') {
+        if ($request->filled('date')) {
             $targetDate = Carbon::parse($request->input('date'));
             $query->whereDate('submission_date', $targetDate->toDateString());
         }
 
-        $submissions = $query->latest('submission_date')->get();
-
-        return $submissions;
+        return response()->json([
+            'status' => 'success',
+            'data' => $query->latest('submission_date')->get()
+        ]);
     }
 
     /**
@@ -51,7 +53,10 @@ class ChecklistSubmissionController extends Controller
             'details.item:id,activity_name,is_required'
         ])->findOrFail($submissionId);
 
-        return $submission;
+        return response()->json([
+            'status' => 'success',
+            'data' => $submission
+        ]);
     }
 
     /**
@@ -59,7 +64,10 @@ class ChecklistSubmissionController extends Controller
      */
     public function storeCheck(Request $request, $submissionDetailId)
     {
-        // ... (Fungsi ini sudah benar, tidak perlu diubah)
+        // Bersihkan id_karyawan agar tidak ada karakter aneh
+        $cleanedIdKaryawan = str_replace(['"', '\\'], '', $request->id_karyawan);
+        $request->merge(['id_karyawan' => $cleanedIdKaryawan]);
+
         $validator = Validator::make($request->all(), [
             'is_checked' => 'required|boolean',
             'notes' => 'nullable|string|max:500',
@@ -70,20 +78,80 @@ class ChecklistSubmissionController extends Controller
             return response()->json(['status' => 'error', 'message' => $validator->errors()], 422);
         }
 
-        $detail = ChecklistSubmissionDetail::findOrFail($submissionDetailId);
-        $submission = $detail->submission;
+        return DB::transaction(function () use ($request, $submissionDetailId) {
+            $detail = ChecklistSubmissionDetail::with('item')->findOrFail($submissionDetailId);
+            $submission = $detail->submission;
 
-        $user = \App\Models\User::firstOrCreate(['karyawan_id' => $request->id_karyawan]);
+            // --- Sinkronisasi User (mengacu ke ChecklistMasterController) ---
+            try {
+                $apiService = new API_Service();
+                $karyawanDataResponse = $apiService->getDataKaryawan(['id_karyawan' => $request->id_karyawan]);
 
-        $detail->update([
-            'is_checked' => $request->is_checked,
-            'notes' => $request->notes
-        ]);
+                if (!empty($karyawanDataResponse[0])) {
+                    $detailKaryawan = $karyawanDataResponse[0];
+                    $namaKaryawan = $detailKaryawan['name'] ?? 'User ' . $request->id_karyawan;
+                    $emailKaryawan = $detailKaryawan['email'] ?? $request->id_karyawan . '@internal.com';
 
-        $submission->update(['submitted_by' => $user->id]);
-        $this->updateSubmissionStatus($submission);
+                    $user = \App\Models\User::updateOrCreate(
+                        ['karyawan_id' => $request->id_karyawan],
+                        ['name' => $namaKaryawan, 'email' => $emailKaryawan]
+                    );
 
-        return $detail;
+                    if ($user->wasRecentlyCreated) {
+                        $user->update(['password' => bcrypt(\Illuminate\Support\Str::random(10))]);
+                    }
+                } else {
+                    throw new Exception('API LokaHR: Data karyawan tidak ditemukan.');
+                }
+            } catch (Exception $e) {
+                Log::error('Gagal sinkronisasi user di storeCheck', [
+                    'id_karyawan' => $request->id_karyawan,
+                    'error' => $e->getMessage()
+                ]);
+
+                // fallback user generik
+                $user = \App\Models\User::firstOrCreate(
+                    ['karyawan_id' => $request->id_karyawan],
+                    [
+                        'name' => 'User ' . $request->id_karyawan,
+                        'email' => $request->id_karyawan . '@internal.com',
+                        'password' => bcrypt(\Illuminate\Support\Str::random(10))
+                    ]
+                );
+            }
+
+            // Update detail checklist
+            $detail->update([
+                'is_checked' => $request->is_checked,
+                'notes' => $request->notes
+            ]);
+
+            // Update submission utama
+            $submission->update(['submitted_by' => $user->id]);
+            $this->updateSubmissionStatus($submission);
+
+            // --- Tambahkan Log Activity ---
+            try {
+                $logController = new Class_ChecklistLog();
+                $logController->insert([
+                    'checklist_master_id' => $submission->schedule->checklist_master_id,
+                    'user_id' => $user->karyawan_id,
+                    'name' => $user->name,
+                    'activity' => $request->is_checked ? 'Check Item' : 'Uncheck Item',
+                    'detail_act' => "User '{$user->name}' mengubah status item '{$detail->item->activity_name}' menjadi " .
+                        ($request->is_checked ? 'selesai' : 'belum selesai') .
+                        ($request->notes ? " dengan catatan: '{$request->notes}'" : ''),
+                ]);
+            } catch (Exception $e) {
+                Log::warning('Gagal menulis log activity.', ['error' => $e->getMessage()]);
+            }
+
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Checklist item berhasil diperbarui.',
+                'data' => $detail
+            ]);
+        });
     }
 
     /**
@@ -101,7 +169,7 @@ class ChecklistSubmissionController extends Controller
         if (!$schedule->master) {
             throw new Exception("Gagal memulai: Master Checklist untuk jadwal '{$schedule->schedule_name}' telah dihapus.");
         }
-        
+
         // Muat relasi items setelah kita yakin master-nya ada.
         $schedule->master->load('items');
 
@@ -133,10 +201,13 @@ class ChecklistSubmissionController extends Controller
                 ]);
             }
         }
-        
-        return $submission;
+
+        return response()->json([
+            'status' => 'success',
+            'data' => $submission
+        ]);
     }
-    
+
 
 
     /**
@@ -144,7 +215,6 @@ class ChecklistSubmissionController extends Controller
      */
     private function updateSubmissionStatus(ChecklistSubmission $submission)
     {
-        // ... (Fungsi ini sudah benar, tidak perlu diubah)
         $totalItems = $submission->details()->count();
         $checkedItems = $submission->details()->where('is_checked', true)->count();
         $newStatus = 'pending';

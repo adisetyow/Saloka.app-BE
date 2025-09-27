@@ -12,6 +12,7 @@ use App\Http\Controllers\Service_Checklist;
 use App\Http\Controllers\ChecklistTypeController;
 
 
+
 /*
 |--------------------------------------------------------------------------
 | API Routes
