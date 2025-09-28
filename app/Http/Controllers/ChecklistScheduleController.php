@@ -12,6 +12,8 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB;
 use App\Http\Controllers\Class_ChecklistLog;
 use App\Models\User;
+use Illuminate\Support\Str;
+use Exception;
 
 class ChecklistScheduleController extends Controller
 {
@@ -23,6 +25,7 @@ class ChecklistScheduleController extends Controller
     /**
      * Menyimpan jadwal baru untuk sebuah Master Checklist dengan detailed logging.
      */
+
     public function store(Request $request)
     {
         $cleanedIdKaryawan = str_replace(['"', '\\'], '', $request->id_karyawan);
@@ -30,7 +33,7 @@ class ChecklistScheduleController extends Controller
 
         $validator = Validator::make($request->all(), [
             'checklist_master_id' => 'required|exists:checklist_masters,id',
-            'schedule_name' => 'required|string|max:255',
+            // 'schedule_name' => 'required|string|max:255', // Dihapus, karena akan digenerate otomatis
             'periode_type' => 'required|in:harian,mingguan,bulanan,tertentu',
             'schedule_details' => 'nullable|array',
             'end_date' => 'nullable|date_format:Y-m-d',
@@ -41,31 +44,53 @@ class ChecklistScheduleController extends Controller
             return response()->json(['status' => 'error', 'message' => $validator->errors()], 422);
         }
 
-        return DB::transaction(function () use ($request) {
-            // --- SINKRONISASI USER ---
-            $user = $this->syncUserFromAPI($request->id_karyawan);
+        try {
+            // highlight-start
+            $newSchedule = DB::transaction(function () use ($request) {
+                // --- SINKRONISASI USER ---
+                $user = $this->syncUserFromAPI($request->id_karyawan);
 
-            // Ambil data master checklist untuk logging
-            $master = ChecklistMaster::findOrFail($request->checklist_master_id);
+                // Ambil data master checklist untuk logging
+                $master = ChecklistMaster::find($request->checklist_master_id);
+                if (!$master) {
+                    // Lemparkan exception jika master tidak ditemukan
+                    throw new Exception("Master Checklist dengan ID {$request->checklist_master_id} tidak ditemukan.");
+                }
 
-            $schedule = ChecklistSchedule::create([
-                'checklist_master_id' => $request->checklist_master_id,
-                'schedule_name' => $request->schedule_name,
-                'periode_type' => $request->periode_type,
-                'schedule_details' => $request->schedule_details,
-                'created_by' => $user->id,
-                'end_date' => $request->end_date,
-            ]);
+                // 2. Membuat kode unik untuk nama jadwal
+                $generatedName = 'JDL-' . now()->format('Ymd') . '-' . strtoupper(Str::random(6));
 
-            // === DETAILED LOGGING UNTUK CREATE SCHEDULE ===
-            $this->logScheduleCreation($schedule, $master, $user, $request);
+                $schedule = ChecklistSchedule::create([
+                    'checklist_master_id' => $request->checklist_master_id,
+                    'schedule_name' => $generatedName,
+                    'periode_type' => $request->periode_type,
+                    'schedule_details' => $request->schedule_details,
+                    'created_by' => $user->id,
+                    'end_date' => $request->end_date,
+                ]);
 
+                // === DETAILED LOGGING UNTUK CREATE SCHEDULE ===
+                $this->logScheduleCreation($schedule, $master, $user, $request);
+
+                // Kembalikan data mentah, bukan response
+                return $schedule;
+            });
+
+            // Kirim response sukses di luar transaksi
             return response()->json([
                 'status' => 'success',
                 'message' => 'Jadwal checklist berhasil dibuat.',
-                'data' => $schedule->load('master:id,name')
+                'data' => $newSchedule->load('master:id,name')
             ], 201);
-        });
+            // highlight-end
+
+        } catch (Exception $e) {
+            // Tangkap semua exception (dari validasi manual atau proses DB)
+            return response()->json([
+                'status' => 'error',
+                'message' => $e->getMessage()
+            ], 500);
+        }
     }
 
     /**
@@ -81,7 +106,6 @@ class ChecklistScheduleController extends Controller
 
         $validator = Validator::make($request->all(), [
             'checklist_master_id' => 'sometimes|required|exists:checklist_masters,id',
-            'schedule_name' => 'sometimes|required|string|max:255',
             'periode_type' => 'sometimes|required|in:harian,mingguan,bulanan,tertentu',
             'schedule_details' => 'nullable|array',
             'end_date' => 'nullable|date_format:Y-m-d',
@@ -113,7 +137,7 @@ class ChecklistScheduleController extends Controller
             }
 
             // Update schedule
-            $updateData = $request->only(['checklist_master_id', 'schedule_name', 'periode_type', 'schedule_details', 'end_date']);
+            $updateData = $request->only(['checklist_master_id', 'periode_type', 'schedule_details', 'end_date']);
             $schedule->update(array_filter($updateData, function ($value) {
                 return $value !== null;
             }));
@@ -225,15 +249,15 @@ class ChecklistScheduleController extends Controller
                 );
 
                 if ($user->wasRecentlyCreated) {
-                    $user->password = bcrypt(\Illuminate\Support\Str::random(10));
+                    $user->password = bcrypt(Str::random(10));
                     $user->save();
                 }
 
                 return $user;
             } else {
-                throw new \Exception('Respons API LokaHR tidak valid atau data karyawan tidak ditemukan.');
+                throw new Exception('Respons API LokaHR tidak valid atau data karyawan tidak ditemukan.');
             }
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             Log::error('Gagal sinkronisasi data karyawan saat membuat jadwal.', [
                 'id_karyawan' => $karyawanId,
                 'error' => $e->getMessage()
@@ -244,7 +268,7 @@ class ChecklistScheduleController extends Controller
                 [
                     'name' => 'User ' . $karyawanId,
                     'email' => $karyawanId . '@internal.com',
-                    'password' => bcrypt(\Illuminate\Support\Str::random(10))
+                    'password' => bcrypt(Str::random(10))
                 ]
             );
         }
@@ -299,7 +323,7 @@ class ChecklistScheduleController extends Controller
                 'detail_act' => "Membuat jadwal '{$schedule->schedule_name}' untuk checklist '{$master->name}' dengan periode {$periodeText} {$endDateText}"
             ]);
 
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             Log::warning('Gagal menulis log untuk pembuatan schedule.', [
                 'schedule_id' => $schedule->id,
                 'error' => $e->getMessage()
@@ -391,7 +415,7 @@ class ChecklistScheduleController extends Controller
                 ]);
             }
 
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             Log::warning('Gagal menulis log untuk update schedule.', [
                 'schedule_id' => $schedule->id,
                 'error' => $e->getMessage()
@@ -417,7 +441,7 @@ class ChecklistScheduleController extends Controller
                 'detail_act' => "Menghapus jadwal '{$schedule->schedule_name}' untuk checklist '{$masterName}' dengan periode {$periodeText}"
             ]);
 
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             Log::warning('Gagal menulis log untuk penghapusan schedule.', [
                 'schedule_id' => $schedule->id,
                 'error' => $e->getMessage()
@@ -426,7 +450,7 @@ class ChecklistScheduleController extends Controller
     }
 
     /**
-     * Helper: Format periode untuk logging yang human-readable.
+     * Helper: Format periode untuk logging
      */
     private function formatPeriodeForLog($periodeType, $scheduleDetails)
     {

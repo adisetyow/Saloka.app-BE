@@ -134,16 +134,17 @@ class ChecklistSubmissionController extends Controller
             'notes' => 'nullable|string|max:500',
             'id_karyawan' => 'required|string',
         ]);
-
         if ($validator->fails()) {
             return response()->json(['status' => 'error', 'message' => $validator->errors()], 422);
         }
 
         try {
-            return DB::transaction(function () use ($request, $submissionDetailId) {
-                // Validasi submission detail ID
+            // highlight-start
+            // Jalankan transaksi dan tangkap data yang berhasil
+            $updatedDetail = DB::transaction(function () use ($request, $submissionDetailId) {
                 if (!is_numeric($submissionDetailId)) {
-                    throw new Exception('ID submission detail tidak valid.');
+                    // Gunakan throw new Exception, bukan return response()
+                    throw new Exception('ID submission detail tidak valid.', 400);
                 }
 
                 $detail = ChecklistSubmissionDetail::with([
@@ -153,7 +154,7 @@ class ChecklistSubmissionController extends Controller
                 ])->find($submissionDetailId);
 
                 if (!$detail) {
-                    throw new Exception('Submission detail tidak ditemukan.');
+                    throw new Exception('Submission detail tidak ditemukan.', 404);
                 }
 
                 $submission = $detail->submission;
@@ -161,15 +162,15 @@ class ChecklistSubmissionController extends Controller
                 $master = $schedule->master;
 
                 // Periksa apakah master masih ada
-                if (!$master) {
-                    throw new Exception('Master checklist untuk item ini telah dihapus.');
+                if (!$detail->submission->schedule->master) {
+                    throw new Exception('Master checklist untuk item ini telah dihapus.', 404);
                 }
 
                 // Simpan status lama untuk comparison
                 $oldStatus = [
                     'is_checked' => $detail->is_checked,
                     'notes' => $detail->notes,
-                    'submission_status' => $submission->status
+                    'submission_status' => $detail->submission->status
                 ];
 
                 // --- Sinkronisasi User ---
@@ -182,21 +183,22 @@ class ChecklistSubmissionController extends Controller
                 ]);
 
                 // Update submission utama
+                $submission = $detail->submission;
                 $submission->update(['submitted_by' => $user->id]);
                 $this->updateSubmissionStatus($submission);
-
-                // Refresh untuk mendapatkan status terbaru
                 $submission->refresh();
 
                 // === DETAILED ACTIVITY LOGGING ===
-                $this->logChecklistItemActivity($detail, $oldStatus, $request, $user, $master, $submission);
+                $this->logChecklistItemActivity($detail, $oldStatus, $request, $user, $submission->schedule->master, $submission);
 
-                return response()->json([
-                    'status' => 'success',
-                    'message' => 'Checklist item berhasil diperbarui.',
-                    'data' => $detail->fresh(['item'])
-                ]);
+                return $detail->fresh(['item']);
             });
+
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Checklist item berhasil diperbarui.',
+                'data' => $updatedDetail
+            ]);
 
         } catch (Exception $e) {
             Log::error('Error in storeCheck', [
@@ -205,10 +207,11 @@ class ChecklistSubmissionController extends Controller
                 'error' => $e->getMessage()
             ]);
 
+            $statusCode = is_numeric($e->getCode()) && $e->getCode() > 0 ? $e->getCode() : 500;
             return response()->json([
                 'status' => 'error',
                 'message' => $e->getMessage()
-            ], 500);
+            ], $statusCode);
         }
     }
 
@@ -219,64 +222,56 @@ class ChecklistSubmissionController extends Controller
     public function startOrGetTodaySubmission($scheduleId, ?Request $request = null)
     {
         try {
-            // Validasi schedule ID
+            // highlight-start
             if (!is_numeric($scheduleId)) {
-                throw new Exception('ID jadwal tidak valid.');
+                // Validasi di luar transaksi jika memungkinkan
+                throw new Exception('ID jadwal tidak valid.', 400);
             }
 
             $schedule = ChecklistSchedule::with(['master.items'])->find($scheduleId);
 
             if (!$schedule) {
-                throw new Exception('Jadwal checklist tidak ditemukan.');
+                throw new Exception('Jadwal checklist tidak ditemukan.', 404);
             }
-
-            // Langkah 2: Pengecekan yang ketat
             if (!$schedule->master) {
-                throw new Exception("Gagal memulai: Master Checklist untuk jadwal '{$schedule->schedule_name}' telah dihapus.");
+                throw new Exception("Gagal memulai: Master Checklist untuk jadwal '{$schedule->schedule_name}' telah dihapus.", 404);
             }
-
             if ($schedule->master->items->isEmpty()) {
-                throw new Exception("Gagal memulai: Master Checklist '{$schedule->master->name}' tidak memiliki satupun activity item.");
+                throw new Exception("Gagal memulai: Master Checklist '{$schedule->master->name}' tidak memiliki satupun activity item.", 404);
             }
+            // highlight-end
 
             $today = Carbon::now()->toDateString();
 
+            // firstOrCreate tidak butuh transaksi eksplisit jika operasinya atomik
             $submission = ChecklistSubmission::firstOrCreate(
-                [
-                    'checklist_schedule_id' => $schedule->id,
-                    'submission_date' => $today,
-                ],
-                [
-                    'submitted_by' => $schedule->created_by,
-                    'status' => 'pending',
-                ]
+                ['checklist_schedule_id' => $schedule->id, 'submission_date' => $today],
+                ['submitted_by' => $schedule->created_by, 'status' => 'pending']
             );
 
             if ($submission->wasRecentlyCreated) {
-                // Buat detail items
-                $createdItemNames = [];
-                foreach ($schedule->master->items->sortBy('order') as $item) {
-                    ChecklistSubmissionDetail::create([
-                        'submission_id' => $submission->id,
-                        'item_id' => $item->id,
-                        'is_checked' => false,
-                    ]);
-                    $createdItemNames[] = $item->activity_name;
-                }
-
-                // Log pembuatan submission baru
-                $this->logSubmissionStart($submission, $schedule, $createdItemNames, $request);
+                // Proses ini sebaiknya ada di dalam transaksi untuk menjamin integritas data
+                DB::transaction(function () use ($submission, $schedule, $request) {
+                    $createdItemNames = [];
+                    foreach ($schedule->master->items->sortBy('order') as $item) {
+                        ChecklistSubmissionDetail::create([
+                            'submission_id' => $submission->id,
+                            'item_id' => $item->id,
+                            'is_checked' => false,
+                        ]);
+                        $createdItemNames[] = $item->activity_name;
+                    }
+                    $this->logSubmissionStart($submission, $schedule, $createdItemNames, $request);
+                });
             }
 
-            // Load relasi lengkap untuk response
             $submission->load([
                 'details.item:id,activity_name,is_required,order',
                 'schedule.master:id,name'
             ]);
 
-            // Sort details berdasarkan order item
             if ($submission->details) {
-                $submission->details = $submission->details->sortBy('item.order');
+                $submission->details = $submission->details->sortBy('item.order')->values();
             }
 
             return response()->json([
@@ -290,12 +285,14 @@ class ChecklistSubmissionController extends Controller
                 'error' => $e->getMessage()
             ]);
 
+            $statusCode = is_numeric($e->getCode()) && $e->getCode() > 0 ? $e->getCode() : 500;
             return response()->json([
                 'status' => 'error',
                 'message' => $e->getMessage()
-            ], 500);
+            ], $statusCode);
         }
     }
+
 
     /**
      * Update status submission dengan logging perubahan status.

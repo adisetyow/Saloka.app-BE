@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Log;
 use App\Http\Controllers\Class_ChecklistLog;
+use App\Models\ChecklistLog;
 
 class ChecklistMasterController extends Controller
 {
@@ -129,7 +130,7 @@ class ChecklistMasterController extends Controller
      */
     public function show(ChecklistMaster $checklistMaster)
     {
-        return $checklistMaster->load('items');
+        return $checklistMaster->load('items', 'type', 'creator');
     }
 
     /**
@@ -354,5 +355,19 @@ class ChecklistMasterController extends Controller
                 ]);
             }
         }
+    }
+
+    public function getActivityLogs(ChecklistMaster $checklistMaster)
+    {
+        // Gunakan relasi jika sudah didefinisikan, atau query manual
+        // Asumsi nama model log Anda adalah ChecklistLog
+        $logs = ChecklistLog::where('checklist_master_id', $checklistMaster->id)
+            ->latest() // Urutkan dari yang terbaru
+            ->get();
+
+        return response()->json([
+            'status' => 'success',
+            'data' => $logs
+        ]);
     }
 }

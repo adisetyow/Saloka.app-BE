@@ -10,6 +10,10 @@ use App\Http\Controllers\Service_SyncTransaction;
 use App\Http\Controllers\Ticket;
 use App\Http\Controllers\Service_Checklist;
 use App\Http\Controllers\ChecklistTypeController;
+use App\Http\Controllers\ChecklistMasterController;
+use App\Http\Controllers\ChecklistScheduleController;
+use App\Http\Controllers\ChecklistSubmissionController;
+
 
 
 
@@ -53,6 +57,7 @@ Route::controller(Service_Master::class)->group(function () {
 
 Route::get('checklist-types', [ChecklistTypeController::class, 'index']);
 Route::post('checklist-types', [ChecklistTypeController::class, 'store']);
+Route::get('checklist-masters/{checklistMaster}/logs', [ChecklistMasterController::class, 'getActivityLogs']);
 
 Route::controller(Service_Checklist::class)->group(function () {
     Route::get('checklist-masters', 'getAllMasters');
