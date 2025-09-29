@@ -58,6 +58,7 @@ Route::controller(Service_Master::class)->group(function () {
 Route::get('checklist-types', [ChecklistTypeController::class, 'index']);
 Route::post('checklist-types', [ChecklistTypeController::class, 'store']);
 Route::get('checklist-masters/{checklistMaster}/logs', [ChecklistMasterController::class, 'getActivityLogs']);
+Route::get('checklist-schedules/{schedule}/logs', [ChecklistScheduleController::class, 'getActivityLogs']);
 
 Route::controller(Service_Checklist::class)->group(function () {
     Route::get('checklist-masters', 'getAllMasters');

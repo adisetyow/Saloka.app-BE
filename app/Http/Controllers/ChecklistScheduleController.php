@@ -498,4 +498,28 @@ class ChecklistScheduleController extends Controller
                 return $periodeType;
         }
     }
+
+    public function getActivityLogs(ChecklistSchedule $schedule)
+    {
+        try {
+            // highlight-start
+            $logs = \App\Models\ChecklistLog::where('checklist_master_id', $schedule->checklist_master_id)
+                ->where('detail_act', 'like', "%{$schedule->schedule_name}%")
+                ->latest()
+                ->get();
+            // highlight-end
+
+            return response()->json([
+                'status' => 'success',
+                'data' => $logs // 
+            ]);
+
+        } catch (Exception $e) {
+            Log::error("Gagal mengambil log untuk schedule ID: {$schedule->id}", ['error' => $e->getMessage()]);
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Terjadi kesalahan saat mengambil data log.'
+            ], 500);
+        }
+    }
 }

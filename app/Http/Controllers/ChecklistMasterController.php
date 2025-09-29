@@ -265,10 +265,9 @@ class ChecklistMasterController extends Controller
                             'is_required' => $itemData['is_required'] ?? true
                         ]);
 
-                        $requiredStatus = ($itemData['is_required'] ?? true) ? 'wajib' : 'opsional';
                         $logEntries[] = [
                             'activity' => 'Add Checklist Item',
-                            'detail_act' => "Menambahkan item baru '{$itemData['activity_name']}' ({$requiredStatus}) ke checklist '{$checklistMaster->name}'"
+                            'detail_act' => "Menambahkan item baru '{$itemData['activity_name']}' ke checklist '{$checklistMaster->name}'"
                         ];
                     }
                 }
