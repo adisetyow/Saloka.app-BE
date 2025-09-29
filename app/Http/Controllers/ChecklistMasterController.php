@@ -130,6 +130,7 @@ class ChecklistMasterController extends Controller
      */
     public function show(ChecklistMaster $checklistMaster)
     {
+        // return $checklistMaster->load('items');
         return $checklistMaster->load('items', 'type', 'creator');
     }
 
@@ -265,9 +266,10 @@ class ChecklistMasterController extends Controller
                             'is_required' => $itemData['is_required'] ?? true
                         ]);
 
+                        $requiredStatus = ($itemData['is_required'] ?? true) ? 'wajib' : 'opsional';
                         $logEntries[] = [
                             'activity' => 'Add Checklist Item',
-                            'detail_act' => "Menambahkan item baru '{$itemData['activity_name']}' ke checklist '{$checklistMaster->name}'"
+                            'detail_act' => "Menambahkan item baru '{$itemData['activity_name']}' ({$requiredStatus}) ke checklist '{$checklistMaster->name}'"
                         ];
                     }
                 }
@@ -327,6 +329,30 @@ class ChecklistMasterController extends Controller
             'name' => 'System User'
         ];
     }
+
+
+    // private function determineUserForLogging($request, $checklistMaster)
+// {
+//     // Prioritas 1: User dari request (YANG SEDANG MELAKUKAN AKSI)
+//     if ($request->filled('id_karyawan')) {
+//         $user = User::where('karyawan_id', $request->id_karyawan)->first();
+//         if ($user) {
+//             return $user;
+//         }
+//     }
+
+    //     // HAPUS FALLBACK KE CREATOR - ini yang menyebabkan masalah
+//     // Jika tidak ada id_karyawan, jangan fallback ke creator
+
+    //     // Prioritas 2: User dummy system (jika tidak ada data sama sekali)
+//     return (object) [
+//         'id' => 0,
+//         'karyawan_id' => 'SYSTEM',
+//         'name' => 'System User'
+//     ];
+// }
+
+
 
     /**
      * Helper: Menyimpan multiple log entries
