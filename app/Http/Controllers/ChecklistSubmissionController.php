@@ -219,38 +219,28 @@ class ChecklistSubmissionController extends Controller
      * Mencari submission hari ini untuk jadwal tertentu.
      * Jika tidak ada, buat baru secara on-demand dengan logging.
      */
-    public function startOrGetTodaySubmission($scheduleId, ?Request $request = null)
+    public function startOrGetTodaySubmission(ChecklistSchedule $schedule, Request $request)
     {
         try {
-            // highlight-start
-            if (!is_numeric($scheduleId)) {
-                // Validasi di luar transaksi jika memungkinkan
-                throw new Exception('ID jadwal tidak valid.', 400);
-            }
+            // Validasi dan pencarian data tidak lagi diperlukan karena sudah ditangani
+            // oleh Route Model Binding sebelum fungsi ini dipanggil.
+            // Kita hanya perlu memeriksa relasi.
 
-            $schedule = ChecklistSchedule::with(['master.items'])->find($scheduleId);
-
-            if (!$schedule) {
-                throw new Exception('Jadwal checklist tidak ditemukan.', 404);
-            }
             if (!$schedule->master) {
                 throw new Exception("Gagal memulai: Master Checklist untuk jadwal '{$schedule->schedule_name}' telah dihapus.", 404);
             }
             if ($schedule->master->items->isEmpty()) {
                 throw new Exception("Gagal memulai: Master Checklist '{$schedule->master->name}' tidak memiliki satupun activity item.", 404);
             }
-            // highlight-end
 
             $today = Carbon::now()->toDateString();
 
-            // firstOrCreate tidak butuh transaksi eksplisit jika operasinya atomik
             $submission = ChecklistSubmission::firstOrCreate(
                 ['checklist_schedule_id' => $schedule->id, 'submission_date' => $today],
                 ['submitted_by' => $schedule->created_by, 'status' => 'pending']
             );
 
             if ($submission->wasRecentlyCreated) {
-                // Proses ini sebaiknya ada di dalam transaksi untuk menjamin integritas data
                 DB::transaction(function () use ($submission, $schedule, $request) {
                     $createdItemNames = [];
                     foreach ($schedule->master->items->sortBy('order') as $item) {
@@ -281,7 +271,8 @@ class ChecklistSubmissionController extends Controller
 
         } catch (Exception $e) {
             Log::error('Error in startOrGetTodaySubmission', [
-                'schedule_id' => $scheduleId,
+                // Diubah untuk mengambil ID dari objek $schedule
+                'schedule_id' => $schedule->id ?? 'Tidak diketahui',
                 'error' => $e->getMessage()
             ]);
 
@@ -525,6 +516,29 @@ class ChecklistSubmissionController extends Controller
                 'new_status' => $newStatus,
                 'error' => $e->getMessage()
             ]);
+        }
+    }
+
+    public function getActivityLogs(ChecklistSubmission $submission)
+    {
+        try {
+            // Ambil master_id dari submission yang sedang dibuka
+            $masterId = $submission->schedule->master->id;
+
+            $logs = \App\Models\ChecklistLog::where('checklist_master_id', $masterId)
+                ->latest()
+                ->get();
+
+            return response()->json([
+                'status' => 'success',
+                'data' => $logs
+            ]);
+        } catch (Exception $e) {
+            Log::error("Gagal mengambil log untuk submission ID: {$submission->id}", ['error' => $e->getMessage()]);
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Terjadi kesalahan saat mengambil data log.'
+            ], 500);
         }
     }
 }

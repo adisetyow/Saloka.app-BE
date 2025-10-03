@@ -340,19 +340,16 @@ class ChecklistScheduleController extends Controller
      */
     private function determineUserForLogging($request, $schedule)
     {
-        // Prioritas 1: User dari request
         if ($request && $request->filled('id_karyawan')) {
             $user = User::where('karyawan_id', $request->id_karyawan)->first();
             if ($user)
                 return $user;
         }
 
-        // Prioritas 2: User yang membuat schedule
         $user = User::find($schedule->created_by);
         if ($user)
             return $user;
 
-        // Prioritas 3: User dummy system
         return (object) [
             'id' => 0,
             'karyawan_id' => 'SYSTEM',

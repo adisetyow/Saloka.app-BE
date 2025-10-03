@@ -42,6 +42,6 @@ class ChecklistSubmission extends Model
      */
     public function user(): BelongsTo
     {
-        return $this->belongsTo(User::class, 'submitted_by', 'id_karyawan');
+        return $this->belongsTo(User::class, 'submitted_by', 'karyawan_id');
     }
 }

@@ -218,8 +218,7 @@ class Service_Checklist extends Controller
     public function getSubmissionDetail($submissionId)
     {
         try {
-            $data = $this->checklistSubmissionController->show($submissionId);
-            return response()->json(['status' => 'success', 'data' => $data]);
+            return $this->checklistSubmissionController->show($submissionId);
         } catch (\Exception $e) {
             return response()->json(['status' => 'error', 'message' => $e->getMessage()], 500);
         }
@@ -263,11 +262,16 @@ class Service_Checklist extends Controller
         }
     }
 
-
-    public function startChecklist(ChecklistSchedule $schedule)
+    public function startChecklist(ChecklistSchedule $schedule, Request $request)
     {
         try {
-            $data = $this->checklistSubmissionController->startOrGetTodaySubmission($schedule);
+            // Panggil dengan DUA argumen
+            $data = $this->checklistSubmissionController->startOrGetTodaySubmission($schedule, $request);
+
+            // Cek jika controller di dalamnya mengembalikan JsonResponse (karena ada error)
+            if ($data instanceof \Illuminate\Http\JsonResponse) {
+                return $data;
+            }
 
             return response()->json([
                 'status' => 'success',

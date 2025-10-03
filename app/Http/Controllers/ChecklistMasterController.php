@@ -331,29 +331,6 @@ class ChecklistMasterController extends Controller
     }
 
 
-    // private function determineUserForLogging($request, $checklistMaster)
-// {
-//     // Prioritas 1: User dari request (YANG SEDANG MELAKUKAN AKSI)
-//     if ($request->filled('id_karyawan')) {
-//         $user = User::where('karyawan_id', $request->id_karyawan)->first();
-//         if ($user) {
-//             return $user;
-//         }
-//     }
-
-    //     // HAPUS FALLBACK KE CREATOR - ini yang menyebabkan masalah
-//     // Jika tidak ada id_karyawan, jangan fallback ke creator
-
-    //     // Prioritas 2: User dummy system (jika tidak ada data sama sekali)
-//     return (object) [
-//         'id' => 0,
-//         'karyawan_id' => 'SYSTEM',
-//         'name' => 'System User'
-//     ];
-// }
-
-
-
     /**
      * Helper: Menyimpan multiple log entries
      */

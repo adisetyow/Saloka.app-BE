@@ -22,4 +22,14 @@ class ChecklistTypeController extends Controller
 
         return response()->json($type, 201);
     }
+
+    public function destroy($id)
+    {
+        $type = ChecklistType::findOrFail($id);
+        $type->delete();
+
+        return response()->json([
+            'message' => 'Checklist Type berhasil dihapus'
+        ], 200);
+    }
 }
